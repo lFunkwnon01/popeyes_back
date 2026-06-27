@@ -1,0 +1,713 @@
+service: popeyes-order-management-backend
+frameworkVersion: "3"
+useDotenv: true
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  stage: ${opt:stage, env:STAGE, 'dev'}
+  region: ${opt:region, env:REGION, 'us-east-1'}
+  usersTableName: popeyes-users-${self:custom.stage}
+  productsTableName: popeyes-products-${self:custom.stage}
+  storesTableName: popeyes-stores-${self:custom.stage}
+  ordersTableName: popeyes-orders-${self:custom.stage}
+  workflowTasksTableName: popeyes-workflow-tasks-${self:custom.stage}
+  orderEventsTableName: popeyes-order-events-${self:custom.stage}
+  eventBusName: popeyes-orders-bus-${self:custom.stage}
+  pythonRequirements:
+    dockerizePip: false
+    slim: true
+
+provider:
+  name: aws
+  runtime: python3.11
+  stage: ${self:custom.stage}
+  region: ${self:custom.region}
+  memorySize: 512
+  timeout: 29
+  logRetentionInDays: 14
+  environment:
+    STAGE: ${self:custom.stage}
+    REGION: ${self:custom.region}
+    JWT_SECRET: ${env:JWT_SECRET, 'change-this-secret'}
+    RAPPI_API_KEY: ${env:RAPPI_API_KEY, 'change-this-rappi-key'}
+    RAPPI_STATUS_API_URL: ${env:RAPPI_STATUS_API_URL, ''}
+    EVENT_BUS_NAME: ${self:custom.eventBusName}
+    USERS_TABLE: ${self:custom.usersTableName}
+    PRODUCTS_TABLE: ${self:custom.productsTableName}
+    STORES_TABLE: ${self:custom.storesTableName}
+    ORDERS_TABLE: ${self:custom.ordersTableName}
+    WORKFLOW_TASKS_TABLE: ${self:custom.workflowTasksTableName}
+    ORDER_EVENTS_TABLE: ${self:custom.orderEventsTableName}
+    ASSETS_BUCKET: !Ref AssetsBucket
+    ORDER_WORKFLOW_ARN: !Ref OrderWorkflowStateMachine
+  httpApi:
+    cors:
+      allowedOrigins:
+        - http://localhost:5173
+        - http://localhost:3000
+        - "*"
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+        - X-Api-Key
+        - x-api-key
+      allowedMethods:
+        - GET
+        - POST
+        - OPTIONS
+      allowCredentials: false
+    authorizers:
+      lambdaAuthorizer:
+        type: request
+        functionName: authorizer
+        enableSimpleResponses: true
+        resultTtlInSeconds: 0
+        identitySource:
+          - $request.header.Authorization
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:Query
+            - dynamodb:Scan
+          Resource:
+            - !GetAtt UsersTable.Arn
+            - !Sub "${UsersTable.Arn}/index/*"
+            - !GetAtt ProductsTable.Arn
+            - !GetAtt StoresTable.Arn
+            - !GetAtt OrdersTable.Arn
+            - !GetAtt WorkflowTasksTable.Arn
+            - !Sub "${WorkflowTasksTable.Arn}/index/*"
+            - !GetAtt OrderEventsTable.Arn
+            - !Sub "${OrderEventsTable.Arn}/index/*"
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource:
+            - !GetAtt OrdersEventBus.Arn
+        - Effect: Allow
+          Action:
+            - states:SendTaskSuccess
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+          Resource:
+            - !Sub "${AssetsBucket.Arn}/*"
+        - Effect: Allow
+          Action:
+            - s3:ListBucket
+          Resource:
+            - !GetAtt AssetsBucket.Arn
+
+package:
+  individually: true
+  patterns:
+    - '!node_modules/**'
+    - '!venv/**'
+    - '!__pycache__/**'
+    - '!.pytest_cache/**'
+    - '!package-lock.json'
+    - '!README.md'
+    - '!events/**'
+
+functions:
+  authorizer:
+    handler: src/functions/authorizer/handler.lambda_handler
+    description: Lambda authorizer for custom JWT validation
+    memorySize: 256
+    timeout: 10
+
+  health:
+    handler: src/functions/health/handler.lambda_handler
+    description: Health endpoint
+    events:
+      - httpApi:
+          path: /health
+          method: GET
+
+  auth:
+    handler: src/functions/auth/handler.lambda_handler
+    description: Authentication service
+    events:
+      - httpApi:
+          path: /auth/register
+          method: POST
+      - httpApi:
+          path: /auth/login
+          method: POST
+      - httpApi:
+          path: /auth/me
+          method: GET
+          authorizer:
+            name: lambdaAuthorizer
+
+  catalog:
+    handler: src/functions/catalog/handler.lambda_handler
+    description: Catalog service
+    events:
+      - httpApi:
+          path: /products
+          method: GET
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
+          path: /products
+          method: POST
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
+          path: /stores
+          method: GET
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
+          path: /stores
+          method: POST
+          authorizer:
+            name: lambdaAuthorizer
+
+  orders:
+    handler: src/functions/orders/handler.lambda_handler
+    description: Orders service
+    events:
+      - httpApi:
+          path: /orders
+          method: POST
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
+          path: /orders/rappi
+          method: POST
+      - httpApi:
+          path: /orders
+          method: GET
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
+          path: /orders/{orderId}
+          method: GET
+          authorizer:
+            name: lambdaAuthorizer
+
+  tasks:
+    handler: src/functions/tasks/handler.lambda_handler
+    description: Workflow task service
+    events:
+      - httpApi:
+          path: /tasks
+          method: GET
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
+          path: /tasks/{taskId}/complete
+          method: POST
+          authorizer:
+            name: lambdaAuthorizer
+
+  dashboard:
+    handler: src/functions/dashboard/handler.lambda_handler
+    description: Dashboard service
+    events:
+      - httpApi:
+          path: /dashboard/summary
+          method: GET
+          authorizer:
+            name: lambdaAuthorizer
+
+  adminSeed:
+    handler: src/functions/admin/handler.lambda_handler
+    description: Admin seed service
+    events:
+      - httpApi:
+          path: /admin/seed
+          method: POST
+          authorizer:
+            name: lambdaAuthorizer
+
+  createHumanTask:
+    handler: src/functions/workflow/create_human_task.lambda_handler
+    description: Creates workflow human tasks and stores task tokens
+    timeout: 30
+
+  updateOrderStatus:
+    handler: src/functions/workflow/update_order_status.lambda_handler
+    description: Updates order status and emits status change events
+    timeout: 30
+
+  closeOrder:
+    handler: src/functions/workflow/close_order.lambda_handler
+    description: Closes completed orders
+    timeout: 30
+
+  notifyRappiStatus:
+    handler: src/functions/integrations/notify_rappi_status.lambda_handler
+    description: Notifies GCP Rappi status endpoint for external orders
+    timeout: 30
+    events:
+      - eventBridge:
+          eventBus: ${self:custom.eventBusName}
+          pattern:
+            source:
+              - popeyes.workflow
+            detail-type:
+              - OrderStatusChanged
+
+resources:
+  Resources:
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.usersTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: email-index
+            KeySchema:
+              - AttributeName: email
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    ProductsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.productsTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenantId
+            AttributeType: S
+          - AttributeName: productId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenantId
+            KeyType: HASH
+          - AttributeName: productId
+            KeyType: RANGE
+
+    StoresTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.storesTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenantId
+            AttributeType: S
+          - AttributeName: storeId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenantId
+            KeyType: HASH
+          - AttributeName: storeId
+            KeyType: RANGE
+
+    OrdersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.ordersTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenantId
+            AttributeType: S
+          - AttributeName: orderId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenantId
+            KeyType: HASH
+          - AttributeName: orderId
+            KeyType: RANGE
+
+    WorkflowTasksTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.workflowTasksTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenantId
+            AttributeType: S
+          - AttributeName: taskId
+            AttributeType: S
+          - AttributeName: orderId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenantId
+            KeyType: HASH
+          - AttributeName: taskId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: orderId-index
+            KeySchema:
+              - AttributeName: orderId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    OrderEventsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.orderEventsTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenantId
+            AttributeType: S
+          - AttributeName: eventId
+            AttributeType: S
+          - AttributeName: orderId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenantId
+            KeyType: HASH
+          - AttributeName: eventId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: orderId-index
+            KeySchema:
+              - AttributeName: orderId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    OrdersEventBus:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: ${self:custom.eventBusName}
+
+    AssetsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: !Sub "popeyes-assets-${self:custom.stage}-${AWS::AccountId}"
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - "*"
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+              AllowedOrigins:
+                - http://localhost:5173
+                - http://localhost:3000
+                - "*"
+              MaxAge: 3000
+
+    StepFunctionsExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: popeyes-stepfunctions-role-${self:custom.stage}
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: states.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: popeyes-stepfunctions-policy-${self:custom.stage}
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - lambda:InvokeFunction
+                  Resource:
+                    - !GetAtt CreateHumanTaskLambdaFunction.Arn
+                    - !GetAtt UpdateOrderStatusLambdaFunction.Arn
+                    - !GetAtt CloseOrderLambdaFunction.Arn
+
+    OrderWorkflowStateMachine:
+      Type: AWS::StepFunctions::StateMachine
+      Properties:
+        StateMachineName: popeyes-order-workflow-${self:custom.stage}
+        RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+        DefinitionString:
+          Fn::Sub: |
+            {
+              "Comment": "Popeyes order workflow with human callbacks",
+              "StartAt": "CreateTaskReceiveOrder",
+              "States": {
+                "CreateTaskReceiveOrder": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+                  "Parameters": {
+                    "FunctionName": "${CreateHumanTaskLambdaFunction.Arn}",
+                    "Payload": {
+                      "taskToken.$": "$$.Task.Token",
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "RECEIVE_ORDER",
+                      "requiredRole": "RESTAURANT_WORKER"
+                    }
+                  },
+                  "ResultPath": "$.receiveTask",
+                  "Next": "UpdateStatusOrderReceived"
+                },
+                "UpdateStatusOrderReceived": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${UpdateOrderStatusLambdaFunction.Arn}",
+                    "Payload": {
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "RECEIVE_ORDER",
+                      "status": "ORDER_RECEIVED"
+                    }
+                  },
+                  "ResultPath": "$.receiveStatus",
+                  "Next": "CreateTaskCookOrder"
+                },
+                "CreateTaskCookOrder": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+                  "Parameters": {
+                    "FunctionName": "${CreateHumanTaskLambdaFunction.Arn}",
+                    "Payload": {
+                      "taskToken.$": "$$.Task.Token",
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "COOK_ORDER",
+                      "requiredRole": "COOK"
+                    }
+                  },
+                  "ResultPath": "$.cookTask",
+                  "Next": "UpdateStatusCooked"
+                },
+                "UpdateStatusCooked": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${UpdateOrderStatusLambdaFunction.Arn}",
+                    "Payload": {
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "COOK_ORDER",
+                      "status": "COOKED"
+                    }
+                  },
+                  "ResultPath": "$.cookStatus",
+                  "Next": "CreateTaskPackOrder"
+                },
+                "CreateTaskPackOrder": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+                  "Parameters": {
+                    "FunctionName": "${CreateHumanTaskLambdaFunction.Arn}",
+                    "Payload": {
+                      "taskToken.$": "$$.Task.Token",
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "PACK_ORDER",
+                      "requiredRole": "DISPATCHER"
+                    }
+                  },
+                  "ResultPath": "$.packTask",
+                  "Next": "UpdateStatusPacked"
+                },
+                "UpdateStatusPacked": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${UpdateOrderStatusLambdaFunction.Arn}",
+                    "Payload": {
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "PACK_ORDER",
+                      "status": "PACKED"
+                    }
+                  },
+                  "ResultPath": "$.packStatus",
+                  "Next": "CreateTaskDeliverOrder"
+                },
+                "CreateTaskDeliverOrder": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+                  "Parameters": {
+                    "FunctionName": "${CreateHumanTaskLambdaFunction.Arn}",
+                    "Payload": {
+                      "taskToken.$": "$$.Task.Token",
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "DELIVER_ORDER",
+                      "requiredRole": "DELIVERY_DRIVER"
+                    }
+                  },
+                  "ResultPath": "$.deliverTask",
+                  "Next": "UpdateStatusDelivered"
+                },
+                "UpdateStatusDelivered": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${UpdateOrderStatusLambdaFunction.Arn}",
+                    "Payload": {
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "DELIVER_ORDER",
+                      "status": "DELIVERED"
+                    }
+                  },
+                  "ResultPath": "$.deliverStatus",
+                  "Next": "CreateTaskConfirmReception"
+                },
+                "CreateTaskConfirmReception": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+                  "Parameters": {
+                    "FunctionName": "${CreateHumanTaskLambdaFunction.Arn}",
+                    "Payload": {
+                      "taskToken.$": "$$.Task.Token",
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "CONFIRM_RECEPTION",
+                      "requiredRole": "CLIENT"
+                    }
+                  },
+                  "ResultPath": "$.confirmTask",
+                  "Next": "UpdateStatusCompleted"
+                },
+                "UpdateStatusCompleted": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${UpdateOrderStatusLambdaFunction.Arn}",
+                    "Payload": {
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId",
+                      "stepName": "CONFIRM_RECEPTION",
+                      "status": "COMPLETED"
+                    }
+                  },
+                  "ResultPath": "$.completedStatus",
+                  "Next": "CloseOrder"
+                },
+                "CloseOrder": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${CloseOrderLambdaFunction.Arn}",
+                    "Payload": {
+                      "tenantId.$": "$.tenantId",
+                      "storeId.$": "$.storeId",
+                      "orderId.$": "$.orderId",
+                      "origin.$": "$.origin",
+                      "externalOrderId.$": "$.externalOrderId"
+                    }
+                  },
+                  "End": true
+                }
+              }
+            }
+
+    EventBridgeStartWorkflowRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: popeyes-eventbridge-start-workflow-${self:custom.stage}
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: popeyes-eventbridge-start-workflow-policy-${self:custom.stage}
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - states:StartExecution
+                  Resource:
+                    - !Ref OrderWorkflowStateMachine
+
+    StartOrderWorkflowRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name: popeyes-order-created-start-workflow-${self:custom.stage}
+        EventBusName: !Ref OrdersEventBus
+        EventPattern:
+          source:
+            - popeyes.orders
+          detail-type:
+            - OrderCreated
+        Targets:
+          - Id: OrderWorkflowStateMachineTarget
+            Arn: !Ref OrderWorkflowStateMachine
+            RoleArn: !GetAtt EventBridgeStartWorkflowRole.Arn
+            InputPath: $.detail
+
+  Outputs:
+    HttpApiUrl:
+      Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+    HealthUrl:
+      Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/health"
+    EventBusName:
+      Value: !Ref OrdersEventBus
+    OrderWorkflowArn:
+      Value: !Ref OrderWorkflowStateMachine
+    UsersTableName:
+      Value: !Ref UsersTable
+    ProductsTableName:
+      Value: !Ref ProductsTable
+    StoresTableName:
+      Value: !Ref StoresTable
+    OrdersTableName:
+      Value: !Ref OrdersTable
+    WorkflowTasksTableName:
+      Value: !Ref WorkflowTasksTable
+    OrderEventsTableName:
+      Value: !Ref OrderEventsTable
+    AssetsBucketName:
+      Value: !Ref AssetsBucket
+    FrontendConfig:
+      Value: !Sub |
+        {"apiUrl":"https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com","region":"${AWS::Region}","assetsBucket":"${AssetsBucket}","tenantId":"popeyes"}

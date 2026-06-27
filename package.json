@@ -1,0 +1,16 @@
+{
+  "name": "popeyes-order-management-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serverless backend for Popeyes order management system",
+  "scripts": {
+    "deploy": "serverless deploy",
+    "remove": "serverless remove",
+    "package": "serverless package",
+    "info": "serverless info"
+  },
+  "devDependencies": {
+    "serverless": "^3.39.0",
+    "serverless-python-requirements": "^6.1.2"
+  }
+}

@@ -1,0 +1,424 @@
+# AWS-CC_POPEYES
+
+Backend serverless para un Sistema de Gestion de Pedidos de Popeyes usando AWS, arquitectura multi-tenant, EDA y una integracion externa en GCP que simula Rappi.
+
+## Arquitectura general
+
+- `API Gateway HTTP API` expone los endpoints REST.
+- `Lambda Authorizer` valida JWT propio sin Cognito.
+- `FastAPI + Mangum` implementa los microservicios HTTP.
+- `DynamoDB` guarda usuarios, productos, tiendas, pedidos, tareas y eventos.
+- `EventBridge` publica y enruta eventos de dominio.
+- `Step Functions` orquesta el flujo humano del pedido.
+- `Wait for Callback with Task Token` se usa en cada etapa humana.
+- `S3` queda preparado para assets o evidencias.
+- `GCP` se integra de forma externa simulando Rappi, pero no se despliega desde este proyecto.
+
+## Microservicios incluidos
+
+- `auth-service`
+- `catalog-service`
+- `orders-service`
+- `workflow-task-service`
+- `dashboard-service`
+- `rappi-integration-service`
+
+## Multi-tenancy
+
+- `tenantId` representa la franquicia o marca. Demo: `popeyes`.
+- `storeId` representa la sede. Demo: `store-001`.
+- Los datos principales guardan `tenantId` y `storeId` cuando aplica.
+- Las rutas autenticadas operan sobre el `tenantId` y `storeId` del JWT.
+
+## Multi-nube
+
+- `POST /orders/rappi` recibe pedidos externos simulando el `Rappi Order API` en GCP.
+- `notifyRappiStatus` escucha `OrderStatusChanged` y llama a `RAPPI_STATUS_API_URL` cuando el pedido tiene `origin=RAPPI`.
+- El backend de GCP no se despliega aqui.
+
+## Servicios AWS creados
+
+- API Gateway HTTP API
+- AWS Lambda
+- Lambda Authorizer
+- Amazon EventBridge
+- AWS Step Functions
+- Amazon DynamoDB
+- Amazon S3
+- CloudWatch Logs
+
+## Estructura del proyecto
+
+```text
+.
+├─ package.json
+├─ requirements.txt
+├─ .env.example
+├─ serverless.yml
+├─ src/
+│  ├─ shared/
+│  └─ functions/
+│     ├─ authorizer/
+│     ├─ health/
+│     ├─ auth/
+│     ├─ catalog/
+│     ├─ orders/
+│     ├─ tasks/
+│     ├─ dashboard/
+│     ├─ admin/
+│     ├─ workflow/
+│     └─ integrations/
+└─ README.md
+```
+
+## Tablas DynamoDB
+
+1. `UsersTable`
+2. `ProductsTable`
+3. `StoresTable`
+4. `OrdersTable`
+5. `WorkflowTasksTable`
+6. `OrderEventsTable`
+
+Todas usan `PAY_PER_REQUEST`.
+
+## Flujo funcional
+
+1. Cliente web o Rappi crea un pedido.
+2. `orders-service` valida JWT o `x-api-key`.
+3. Guarda el pedido con estado `ORDER_CREATED`.
+4. Publica `OrderCreated` en EventBridge.
+5. EventBridge inicia `OrderWorkflow` en Step Functions.
+6. Step Functions crea una tarea humana con `taskToken` y espera callback.
+7. El frontend consulta `GET /tasks`.
+8. El trabajador completa `POST /tasks/{taskId}/complete`.
+9. La Lambda de tareas llama `SendTaskSuccess`.
+10. Step Functions actualiza el estado del pedido y publica `OrderStatusChanged`.
+11. Si el pedido viene de Rappi, `notifyRappiStatus` llama a `RAPPI_STATUS_API_URL`.
+
+## Etapas humanas del workflow
+
+1. `RECEIVE_ORDER` -> `RESTAURANT_WORKER` -> `ORDER_RECEIVED`
+2. `COOK_ORDER` -> `COOK` -> `COOKED`
+3. `PACK_ORDER` -> `DISPATCHER` -> `PACKED`
+4. `DELIVER_ORDER` -> `DELIVERY_DRIVER` -> `DELIVERED`
+5. `CONFIRM_RECEPTION` -> `CLIENT` -> `COMPLETED`
+
+## Autenticacion
+
+- `POST /auth/register`
+- `POST /auth/login`
+- `GET /auth/me`
+
+JWT incluye:
+
+- `userId`
+- `tenantId`
+- `storeId`
+- `role`
+- `email`
+- `name`
+
+Nota de bootstrap:
+
+- Si todavia no existe ningun `ADMIN`, `POST /auth/register` permite crear el primer usuario con el rol solicitado.
+- Despues de que exista un `ADMIN`, el registro publico fuerza el rol `CLIENT`.
+
+## Variables de entorno
+
+Copiar `.env.example` a `.env` y completar:
+
+```env
+STAGE=dev
+REGION=us-east-1
+JWT_SECRET=change-this-secret
+RAPPI_API_KEY=change-this-rappi-key
+RAPPI_STATUS_API_URL=https://example.com/rappi/status
+```
+
+## Instalacion
+
+1. Instala dependencias de Serverless Framework:
+
+```bash
+npm install
+```
+
+2. Asegura credenciales AWS validas en tu ambiente.
+
+En una VM Linux normal, la ruta esperada es:
+
+```bash
+~/.aws/credentials
+```
+
+No hace falta guardar credenciales dentro del repo.
+
+3. Configura `.env`.
+
+## Despliegue
+
+Flujo tipico en una VM AWS:
+
+```bash
+git clone <tu-repo>
+cd popeyes
+npm install
+cp .env.example .env
+serverless deploy
+```
+
+```bash
+serverless deploy
+```
+
+Si no tienes `serverless` global instalado:
+
+```bash
+npx serverless deploy
+```
+
+## Empaquetado
+
+```bash
+npx serverless package
+```
+
+## Eliminar recursos
+
+```bash
+serverless remove
+```
+
+O con `npx`:
+
+```bash
+npx serverless remove
+```
+
+## Verificacion rapida local
+
+Validacion de sintaxis Python:
+
+```bash
+python -m compileall src
+```
+
+## Endpoints
+
+Publicos:
+
+- `GET /health`
+- `POST /auth/register`
+- `POST /auth/login`
+- `POST /orders/rappi`
+
+Protegidos por Lambda Authorizer:
+
+- `GET /auth/me`
+- `GET /products`
+- `POST /products`
+- `GET /stores`
+- `POST /stores`
+- `POST /orders`
+- `GET /orders`
+- `GET /orders/{orderId}`
+- `GET /tasks`
+- `POST /tasks/{taskId}/complete`
+- `GET /dashboard/summary`
+- `POST /admin/seed`
+
+## Seed demo
+
+El seed no corre automaticamente.
+
+Flujo recomendado:
+
+1. Registrar un primer admin con `POST /auth/register`.
+2. Iniciar sesion.
+3. Llamar `POST /admin/seed` con JWT de admin.
+
+El seed crea:
+
+- `tenantId=popeyes`
+- `storeId=store-001`
+- productos demo
+- usuarios demo con password `password123`
+
+Usuarios demo esperados despues del seed:
+
+- `admin@popeyes.com`
+- `worker@popeyes.com`
+- `cook@popeyes.com`
+- `dispatcher@popeyes.com`
+- `driver@popeyes.com`
+- `client@popeyes.com`
+
+## Ejemplos cURL
+
+### 1. Crear el primer admin
+
+```bash
+curl -X POST "$API_URL/auth/register" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@popeyes.com",
+    "password": "password123",
+    "name": "Admin Popeyes",
+    "role": "ADMIN",
+    "tenantId": "popeyes",
+    "storeId": "store-001"
+  }'
+```
+
+### 2. Login
+
+```bash
+curl -X POST "$API_URL/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@popeyes.com",
+    "password": "password123"
+  }'
+```
+
+### 3. Seed
+
+```bash
+curl -X POST "$API_URL/admin/seed" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 4. Crear pedido WEB_POPEYES
+
+```bash
+curl -X POST "$API_URL/orders" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "storeId": "store-001",
+    "items": [
+      {"productId": "prd-demo-1", "name": "Chicken Sandwich", "price": 18.5, "quantity": 1},
+      {"productId": "prd-demo-2", "name": "Gaseosa", "price": 6.5, "quantity": 1}
+    ]
+  }'
+```
+
+### 5. Ver tareas pendientes
+
+```bash
+curl -X GET "$API_URL/tasks" \
+  -H "Authorization: Bearer $WORKER_TOKEN"
+```
+
+### 6. Completar RECEIVE_ORDER
+
+```bash
+curl -X POST "$API_URL/tasks/$TASK_ID/complete" \
+  -H "Authorization: Bearer $WORKER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"notes": "Pedido recibido"}'
+```
+
+### 7. Completar COOK_ORDER
+
+```bash
+curl -X POST "$API_URL/tasks/$TASK_ID/complete" \
+  -H "Authorization: Bearer $COOK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"notes": "Pedido cocinado"}'
+```
+
+### 8. Completar PACK_ORDER
+
+```bash
+curl -X POST "$API_URL/tasks/$TASK_ID/complete" \
+  -H "Authorization: Bearer $DISPATCHER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"notes": "Pedido empacado"}'
+```
+
+### 9. Completar DELIVER_ORDER
+
+```bash
+curl -X POST "$API_URL/tasks/$TASK_ID/complete" \
+  -H "Authorization: Bearer $DRIVER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"notes": "Pedido entregado"}'
+```
+
+### 10. Completar CONFIRM_RECEPTION
+
+```bash
+curl -X POST "$API_URL/tasks/$TASK_ID/complete" \
+  -H "Authorization: Bearer $CLIENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"notes": "Pedido recibido por el cliente"}'
+```
+
+### 11. Ver dashboard
+
+```bash
+curl -X GET "$API_URL/dashboard/summary" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### 12. Crear pedido RAPPI
+
+```bash
+curl -X POST "$API_URL/orders/rappi" \
+  -H "x-api-key: $RAPPI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenantId": "popeyes",
+    "storeId": "store-001",
+    "externalOrderId": "rappi-1001",
+    "customerName": "Cliente Rappi",
+    "items": [
+      {"productId": "prd-demo-1", "name": "Combo 2 piezas", "price": 23.9, "quantity": 1}
+    ]
+  }'
+```
+
+### 13. Verificar integracion Rappi
+
+Cuando el pedido de origen `RAPPI` cambie de estado, la Lambda `notifyRappiStatus` intentara enviar este payload a `RAPPI_STATUS_API_URL`:
+
+```json
+{
+  "externalOrderId": "rappi-1001",
+  "orderId": "ord-...",
+  "tenantId": "popeyes",
+  "storeId": "store-001",
+  "status": "PACKED",
+  "timestamp": "2026-06-27T12:00:00Z"
+}
+```
+
+## Como se cumplen los requisitos del curso
+
+- `Multi-tenancy`: todos los recursos principales almacenan `tenantId`, y donde aplica tambien `storeId`.
+- `Serverless`: todo el backend se despliega con Lambda, API Gateway, EventBridge, Step Functions, DynamoDB y S3.
+- `EDA`: `OrderCreated` y `OrderStatusChanged` viajan por EventBridge.
+- `Multi-nube`: AWS gestiona el backend y GCP queda como integracion externa tipo Rappi.
+- `Wait for Callback with Task Token`: cada etapa humana del workflow espera `SendTaskSuccess` desde `completeTask`.
+- `Microservicios`: el backend esta separado por dominios funcionales en handlers independientes.
+
+## Outputs utiles del deploy
+
+El stack expone outputs con:
+
+- `HttpApiUrl`
+- `HealthUrl`
+- `EventBusName`
+- `OrderWorkflowArn`
+- nombres de tablas
+- `AssetsBucketName`
+- `FrontendConfig`
+
+## Notas finales
+
+- `Amplify` no se despliega desde este proyecto.
+- CORS esta habilitado para `localhost:5173`, `localhost:3000` y `*` para demo.
+- `notifyRappiStatus` no hace nada cuando el pedido no es de origen `RAPPI`.
+- `states:SendTaskSuccess` usa permiso sobre `*` porque el callback por task token no se acota practicamente igual que DynamoDB o EventBridge.
