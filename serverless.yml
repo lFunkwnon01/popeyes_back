@@ -237,12 +237,16 @@ resources:
         AttributeDefinitions:
           - AttributeName: tenantId
             AttributeType: S
-          - AttributeName: productId
+          - AttributeName: storeIdProductId
             AttributeType: S
         KeySchema:
           - AttributeName: tenantId
             KeyType: HASH
-          - AttributeName: productId
+          # SK = "storeId#productId" (ej: "store-001#prd-abc123")
+          # Esto permite:
+          #   - Listar todos los productos del tenant:   query(tenantId = X)
+          #   - Listar productos de UNA tienda:            query(tenantId = X AND begins_with(SK, "store-001#"))
+          - AttributeName: storeIdProductId
             KeyType: RANGE
 
     StoresTable:

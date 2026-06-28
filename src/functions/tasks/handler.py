@@ -25,15 +25,30 @@ def get_task_or_404(tenant_id, task_id):
 
 
 def user_can_access_task(user, task):
-    if user["role"] == "ADMIN":
-        return True
-    if task.get("requiredRole") != user["role"]:
+    """
+    Verifica si el user puede ver/completar esta tarea.
+
+    - CLIENT: la tarea es suya (el order es suyo)
+    - Workers (COOK/DISPATCHER/DRIVER/RESTAURANT_WORKER): la tarea requiere
+      su rol Y la tarea es de su tienda
+    - ADMIN: la tarea es de su tienda
+    """
+    user_store = user.get("storeId") or ""
+
+    # Filtro de tienda: cualquier usuario con tienda asignada solo ve su tienda
+    if user_store and task.get("storeId") and task.get("storeId") != user_store:
         return False
+
     if user["role"] == "CLIENT":
         order = orders_table().get_item(Key={"tenantId": task["tenantId"], "orderId": task["orderId"]}).get("Item")
         return bool(order and order.get("customerId") == user["userId"])
-    if user.get("storeId"):
-        return task.get("storeId") == user.get("storeId")
+
+    # Workers: la tarea requiere su rol
+    if task.get("requiredRole") != user["role"]:
+        # ADMIN puede ver tareas de cualquier rol de su tienda
+        if user["role"] != "ADMIN":
+            return False
+
     return True
 
 
