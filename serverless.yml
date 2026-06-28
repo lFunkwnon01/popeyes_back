@@ -189,10 +189,15 @@ functions:
 
   adminSeed:
     handler: src/functions/admin/handler.lambda_handler
-    description: Admin seed service
+    description: Admin service (seed + create users)
     events:
       - httpApi:
           path: /admin/seed
+          method: POST
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
+          path: /admin/users
           method: POST
           authorizer:
             name: lambdaAuthorizer
