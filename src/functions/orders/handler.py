@@ -131,6 +131,8 @@ def create_order(request: Request, payload=Body(...)):
         "createdAt": now_iso(),
         "updatedAt": now_iso(),
         "completedAt": None,
+        "deliveryAddress": payload.get("deliveryAddress") or "",
+        "paymentMethod": payment_method,
     }
     save_order_and_emit(order)
     return success_response_safe(order, 201)
@@ -164,6 +166,8 @@ def create_rappi_order(request: Request, payload=Body(...)):
         "createdAt": now_iso(),
         "updatedAt": now_iso(),
         "completedAt": None,
+        "deliveryAddress": payload.get("deliveryAddress") or "",
+        "paymentMethod": payment_method,
     }
     save_order_and_emit(order)
     return success_response_safe(order, 201)
