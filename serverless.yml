@@ -72,6 +72,8 @@ provider:
       allowedMethods:
         - GET
         - POST
+        - PUT
+        - DELETE
         - OPTIONS
       allowCredentials: false
     authorizers:
