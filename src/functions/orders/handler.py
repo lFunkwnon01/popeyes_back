@@ -9,7 +9,7 @@ from src.shared.app import create_app
 from src.shared.dynamodb import now_iso, order_events_table, orders_table
 from src.shared.events import put_event
 from src.shared.ids import new_id
-from src.shared.permissions import get_current_user, require_roles
+from src.shared.permissions import get_current_user, require_roles, resolve_tenant_id
 from src.shared.response import success_response_safe, success_response
 
 
@@ -43,7 +43,6 @@ def save_order_and_emit(order):
         "tenantId": order["tenantId"],
         "eventId": new_id("evt"),
         "orderId": order["orderId"],
-        "storeId": order["storeId"],
         "eventType": "OrderCreated",
         "status": order["status"],
         "createdAt": now_iso(),
@@ -56,7 +55,6 @@ def save_order_and_emit(order):
         "OrderCreated",
         {
             "tenantId": order["tenantId"],
-            "storeId": order["storeId"],
             "orderId": order["orderId"],
             "origin": order["origin"],
             "externalOrderId": order.get("externalOrderId"),
@@ -82,45 +80,41 @@ def normalize_order_items(items):
 @app.post("/orders")
 def create_order(request: Request, payload=Body(...)):
     """
-    Crea un pedido en una tienda específica.
+    Crea un pedido en la sede (tenant) del usuario.
 
-    El `storeId` se toma de:
-    1. body (si viene) - útil para CLIENT que selecciona tienda en el frontend
-    2. JWT (si el user tiene tienda asignada) - útil para ADMIN
-    3. DEFAULT_STORE_ID (fallback)
+    El `tenantId` se toma de:
+    1. JWT (si el user tiene sede asignada) - ADMIN/worker
+    2. body (si viene) - CLIENT, que elige sede en el frontend
 
-    Para un CLIENT sin tienda asignada en el JWT, DEBE venir storeId en el body.
-    Para un ADMIN, se usa su tienda asignada (ignora el body para evitar
-    que un admin de Miraflores cree pedidos en Surco).
+    Para un CLIENT (sin tenantId fijo en el JWT), DEBE venir tenantId
+    en el body. Para un ADMIN, se usa su tenant asignado (ignora el
+    body para evitar que un admin de Miraflores cree pedidos en Surco).
     """
     user = get_current_user(request)
     require_roles(user, {"CLIENT", "ADMIN"})
 
     items = normalize_order_items(payload.get("items"))
 
-    # Resolver el storeId según el rol
     if user["role"] == "ADMIN":
-        # Admin: usa su tienda asignada (ignora el body)
-        store_id = user.get("storeId")
-        if not store_id:
+        tenant_id = user.get("tenantId")
+        if not tenant_id:
             raise HTTPException(
                 status_code=400,
-                detail="Admin sin tienda asignada no puede crear pedidos",
+                detail="Admin sin sede asignada no puede crear pedidos",
             )
     else:
-        # CLIENT: usa el del body (que viene del frontend al elegir tienda)
-        # o el del JWT si lo tiene
-        store_id = payload.get("storeId") or user.get("storeId")
-        if not store_id:
+        tenant_id = payload.get("tenantId") or user.get("tenantId")
+        if not tenant_id:
             raise HTTPException(
                 status_code=400,
-                detail="storeId es requerido en el body (el cliente debe elegir tienda)",
+                detail="tenantId es requerido en el body (el cliente debe elegir sede)",
             )
 
+    payment_method = payload.get("paymentMethod") or ""
+
     order = {
-        "tenantId": user["tenantId"],
+        "tenantId": tenant_id,
         "orderId": new_id("ord"),
-        "storeId": store_id,
         "customerId": user["userId"],
         "customerName": payload.get("customerName") or user.get("name") or user["email"],
         "origin": "WEB_POPEYES",
@@ -147,15 +141,15 @@ def create_rappi_order(request: Request, payload=Body(...)):
 
     items = normalize_order_items(payload.get("items"))
     tenant_id = payload.get("tenantId") or config.DEFAULT_TENANT_ID
-    store_id = payload.get("storeId") or config.DEFAULT_STORE_ID
     external_order_id = payload.get("externalOrderId")
     if not external_order_id:
         raise HTTPException(status_code=400, detail="externalOrderId is required")
 
+    payment_method = payload.get("paymentMethod") or ""
+
     order = {
         "tenantId": tenant_id,
         "orderId": new_id("ord"),
-        "storeId": store_id,
         "customerId": payload.get("customerId") or "rappi-customer",
         "customerName": payload.get("customerName") or "Rappi Customer",
         "origin": "RAPPI",
@@ -176,51 +170,31 @@ def create_rappi_order(request: Request, payload=Body(...)):
 @app.get("/orders")
 def list_orders(request: Request):
     """
-    Lista los pedidos visibles para el usuario actual.
+    Lista los pedidos visibles para el usuario actual, dentro de UNA sede.
 
-    Reglas de visibilidad:
-    - CLIENT: solo SUS pedidos (customerId == userId), en cualquier tienda
-    - ADMIN: solo los pedidos de SU tienda (storeId del JWT)
-    - Workers (COOK/DISPATCHER/etc): solo los pedidos de SU tienda
+    - ADMIN/worker: su tenantId (JWT) fija la sede, no hay ambigüedad.
+    - CLIENT: no tiene tenantId fijo, así que debe indicar `tenantId` en
+      el query (la sede que tiene seleccionada en el frontend). Dentro de
+      esa sede, solo ve SUS pedidos (customerId == userId).
 
-    Filtros opcionales vía query params:
-    - status: filtrar por OrderStatus
-    - origin: filtrar por WEB_POPEYES o RAPPI
-    - storeId: filtrar por tienda (CLIENT puede usar cualquiera;
-      admin/worker solo su tienda; si pide otra → 403)
+    Filtros opcionales vía query params: status, origin.
     """
     user = get_current_user(request)
-    response = orders_table().query(KeyConditionExpression=Key("tenantId").eq(user["tenantId"]))
+    tenant_id = resolve_tenant_id(user, request)
+    response = orders_table().query(KeyConditionExpression=Key("tenantId").eq(tenant_id))
     items = response.get("Items", [])
 
     query_params = request.query_params
     status = query_params.get("status")
     origin = query_params.get("origin")
-    store_id = query_params.get("storeId")
-    user_store = user.get("storeId") or ""
-
-    # Validar que admin/workers no pidan otra tienda
-    if store_id and user["role"] != "CLIENT" and user_store and store_id != user_store:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Usuario de tienda {user_store} no puede ver pedidos de {store_id}",
-        )
 
     filtered = []
     for order in items:
-        # Visibilidad por rol
         if user["role"] == "CLIENT" and order.get("customerId") != user["userId"]:
             continue
-        # Admin y workers: solo los de su tienda
-        if user["role"] in {"ADMIN", "COOK", "DISPATCHER", "DELIVERY_DRIVER", "RESTAURANT_WORKER"}:
-            if user_store and order.get("storeId") != user_store:
-                continue
-        # Filtros de query
         if status and order.get("status") != status:
             continue
         if origin and order.get("origin") != origin:
-            continue
-        if store_id and order.get("storeId") != store_id:
             continue
         filtered.append(order)
 
@@ -231,22 +205,14 @@ def list_orders(request: Request):
 @app.get("/orders/{order_id}")
 def get_order(order_id: str, request: Request):
     user = get_current_user(request)
-    response = orders_table().get_item(Key={"tenantId": user["tenantId"], "orderId": order_id})
+    tenant_id = resolve_tenant_id(user, request)
+    response = orders_table().get_item(Key={"tenantId": tenant_id, "orderId": order_id})
     order = response.get("Item")
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    user_store = user.get("storeId") or ""
-
     if user["role"] == "CLIENT" and order.get("customerId") != user["userId"]:
         raise HTTPException(status_code=403, detail="Forbidden")
-
-    # Admin/workers solo de su tienda
-    if user["role"] != "CLIENT" and user_store and order.get("storeId") != user_store:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Usuario de tienda {user_store} no puede ver pedidos de {order.get('storeId')}",
-        )
 
     return success_response_safe(order)
 

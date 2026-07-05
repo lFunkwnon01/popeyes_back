@@ -1,27 +1,24 @@
 from src.shared import config
 
 
-# === 3 TIENDAS (sedes) ===
-# Cada tienda tiene su propio admin + sus propios productos exclusivos.
-# Algunas productos son compartidos entre tiendas (los "core" del menú).
+# === 3 TENANTS (una sede = un tenant, identificado por distrito) ===
+# Cada tenant tiene su propio admin + sus propios productos exclusivos.
+# Algunos productos son compartidos entre tenants (los "core" del menú).
 SEED_STORES = [
     {
-        "tenantId": config.DEFAULT_TENANT_ID,
-        "storeId": "store-001",
+        "tenantId": "popeyes-miraflores",
         "name": "Popeyes Miraflores",
         "address": "Av. Larco 345, Miraflores, Lima",
         "active": True,
     },
     {
-        "tenantId": config.DEFAULT_TENANT_ID,
-        "storeId": "store-002",
+        "tenantId": "popeyes-surco",
         "name": "Popeyes Surco",
         "address": "Av. Caminos del Inca 1234, Surco, Lima",
         "active": True,
     },
     {
-        "tenantId": config.DEFAULT_TENANT_ID,
-        "storeId": "store-003",
+        "tenantId": "popeyes-barranco",
         "name": "Popeyes Barranco",
         "address": "Jr. Bolognesi 567, Barranco, Lima",
         "active": True,
@@ -30,42 +27,41 @@ SEED_STORES = [
 
 
 # === USERS ===
-# - 1 ADMIN por tienda (cada admin maneja SOLO su tienda)
-# - 1 worker (RESTAURANT_WORKER, COOK, DISPATCHER, DELIVERY_DRIVER) por tienda
-# - 1 CLIENT global (puede pedir en cualquier tienda)
+# - 1 ADMIN por tenant (cada admin maneja SOLO su tenant/sede)
+# - 1 worker (RESTAURANT_WORKER, COOK, DISPATCHER, DELIVERY_DRIVER) por tenant
+# - 1 CLIENT global (sin tenantId fijo: pide en cualquier sede)
 SEED_USERS = [
     # Miraflores
-    {"email": "admin.miraflores@popeyes.pe", "name": "Maria Admin Miraflores", "role": "ADMIN", "storeId": "store-001"},
-    {"email": "worker.miraflores@popeyes.pe", "name": "Carlos Recepcionista", "role": "RESTAURANT_WORKER", "storeId": "store-001"},
-    {"email": "cook.miraflores@popeyes.pe", "name": "Juan Cocinero", "role": "COOK", "storeId": "store-001"},
-    {"email": "dispatcher.miraflores@popeyes.pe", "name": "Ana Empacadora", "role": "DISPATCHER", "storeId": "store-001"},
-    {"email": "driver.miraflores@popeyes.pe", "name": "Luis Repartidor", "role": "DELIVERY_DRIVER", "storeId": "store-001"},
+    {"email": "admin.miraflores@popeyes.pe", "name": "Maria Admin Miraflores", "role": "ADMIN", "tenantId": "popeyes-miraflores"},
+    {"email": "worker.miraflores@popeyes.pe", "name": "Carlos Recepcionista", "role": "RESTAURANT_WORKER", "tenantId": "popeyes-miraflores"},
+    {"email": "cook.miraflores@popeyes.pe", "name": "Juan Cocinero", "role": "COOK", "tenantId": "popeyes-miraflores"},
+    {"email": "dispatcher.miraflores@popeyes.pe", "name": "Ana Empacadora", "role": "DISPATCHER", "tenantId": "popeyes-miraflores"},
+    {"email": "driver.miraflores@popeyes.pe", "name": "Luis Repartidor", "role": "DELIVERY_DRIVER", "tenantId": "popeyes-miraflores"},
     # Surco
-    {"email": "admin.surco@popeyes.pe", "name": "Roberto Admin Surco", "role": "ADMIN", "storeId": "store-002"},
-    {"email": "worker.surco@popeyes.pe", "name": "Sofia Recepcionista", "role": "RESTAURANT_WORKER", "storeId": "store-002"},
-    {"email": "cook.surco@popeyes.pe", "name": "Miguel Cocinero", "role": "COOK", "storeId": "store-002"},
-    {"email": "dispatcher.surco@popeyes.pe", "name": "Patricia Empacadora", "role": "DISPATCHER", "storeId": "store-002"},
-    {"email": "driver.surco@popeyes.pe", "name": "Andres Repartidor", "role": "DELIVERY_DRIVER", "storeId": "store-002"},
+    {"email": "admin.surco@popeyes.pe", "name": "Roberto Admin Surco", "role": "ADMIN", "tenantId": "popeyes-surco"},
+    {"email": "worker.surco@popeyes.pe", "name": "Sofia Recepcionista", "role": "RESTAURANT_WORKER", "tenantId": "popeyes-surco"},
+    {"email": "cook.surco@popeyes.pe", "name": "Miguel Cocinero", "role": "COOK", "tenantId": "popeyes-surco"},
+    {"email": "dispatcher.surco@popeyes.pe", "name": "Patricia Empacadora", "role": "DISPATCHER", "tenantId": "popeyes-surco"},
+    {"email": "driver.surco@popeyes.pe", "name": "Andres Repartidor", "role": "DELIVERY_DRIVER", "tenantId": "popeyes-surco"},
     # Barranco
-    {"email": "admin.barranco@popeyes.pe", "name": "Elena Admin Barranco", "role": "ADMIN", "storeId": "store-003"},
-    {"email": "worker.barranco@popeyes.pe", "name": "Diego Recepcionista", "role": "RESTAURANT_WORKER", "storeId": "store-003"},
-    {"email": "cook.barranco@popeyes.pe", "name": "Lucia Cocinera", "role": "COOK", "storeId": "store-003"},
-    {"email": "dispatcher.barranco@popeyes.pe", "name": "Fernando Empacador", "role": "DISPATCHER", "storeId": "store-003"},
-    {"email": "driver.barranco@popeyes.pe", "name": "Carmen Repartidora", "role": "DELIVERY_DRIVER", "storeId": "store-003"},
-    # Cliente global (puede pedir en cualquier tienda)
-    {"email": "cliente@popeyes.pe", "name": "Cliente Popeyes", "role": "CLIENT", "storeId": ""},
+    {"email": "admin.barranco@popeyes.pe", "name": "Elena Admin Barranco", "role": "ADMIN", "tenantId": "popeyes-barranco"},
+    {"email": "worker.barranco@popeyes.pe", "name": "Diego Recepcionista", "role": "RESTAURANT_WORKER", "tenantId": "popeyes-barranco"},
+    {"email": "cook.barranco@popeyes.pe", "name": "Lucia Cocinera", "role": "COOK", "tenantId": "popeyes-barranco"},
+    {"email": "dispatcher.barranco@popeyes.pe", "name": "Fernando Empacador", "role": "DISPATCHER", "tenantId": "popeyes-barranco"},
+    {"email": "driver.barranco@popeyes.pe", "name": "Carmen Repartidora", "role": "DELIVERY_DRIVER", "tenantId": "popeyes-barranco"},
+    # Cliente global (sin tenantId fijo, puede pedir en cualquier sede)
+    {"email": "cliente@popeyes.pe", "name": "Cliente Popeyes", "role": "CLIENT", "tenantId": ""},
 ]
 
 
-# === PRODUCTOS POR TIENDA ===
-# Estructura: { "store-001": [producto1, producto2, ...], "store-002": [...] }
-# Cada producto tiene su storeId inyectado al guardarse.
-SEED_PRODUCTS_BY_STORE = {
-    "store-001": [
+# === PRODUCTOS POR TENANT ===
+# Estructura: { "popeyes-miraflores": [producto1, producto2, ...], ... }
+SEED_PRODUCTS_BY_TENANT = {
+    "popeyes-miraflores": [
         # Productos exclusivos de Miraflores
         {"name": "Combo Familiar Miraflores", "description": "10 piezas + 2 papas grandes + 4 bebidas (especial Miraflores)", "price": 99.90, "category": "Combos", "imageUrl": "", "active": True},
         {"name": "Pollo a la Brasa Miraflores", "description": "Pollo a la brasa estilo peruano, exclusivo de esta sede", "price": 45.00, "category": "Pollos", "imageUrl": "", "active": True},
-        # Productos compartidos (también en otras tiendas)
+        # Productos compartidos (también en otras sedes)
         {"name": "Bucket 8 Piezas", "description": "8 piezas de pollo crispy sazonado", "price": 64.90, "category": "Buckets", "imageUrl": "", "active": True},
         {"name": "Bucket 12 Piezas", "description": "12 piezas para compartir", "price": 89.90, "category": "Buckets", "imageUrl": "", "active": True},
         {"name": "Classic Chicken Sandwich", "description": "Pollo crispy, pepinillo y salsa mayo", "price": 19.90, "category": "Sandwiches", "imageUrl": "", "active": True},
@@ -74,7 +70,7 @@ SEED_PRODUCTS_BY_STORE = {
         {"name": "Chicken Tenders (6 unid.)", "description": "Tiras de pollo empanizado crujiente", "price": 29.90, "category": "Pollos", "imageUrl": "", "active": True},
         {"name": "Coca-Cola 500ml", "description": "Gaseosa bien fría", "price": 7.50, "category": "Bebidas", "imageUrl": "", "active": True},
     ],
-    "store-002": [
+    "popeyes-surco": [
         # Productos exclusivos de Surco
         {"name": "Combo Pareja Surco", "description": "2 piezas + papas para compartir + 2 bebidas (especial Surco)", "price": 39.90, "category": "Combos", "imageUrl": "", "active": True},
         {"name": "Alitas Picantes Surco", "description": "12 alitas picantes con dip de blue cheese", "price": 35.00, "category": "Pollos", "imageUrl": "", "active": True},
@@ -88,7 +84,7 @@ SEED_PRODUCTS_BY_STORE = {
         {"name": "Biscuit", "description": "Pan de buttermilk recién horneado", "price": 5.90, "category": "Sides", "imageUrl": "", "active": True},
         {"name": "Coca-Cola 500ml", "description": "Gaseosa bien fría", "price": 7.50, "category": "Bebidas", "imageUrl": "", "active": True},
     ],
-    "store-003": [
+    "popeyes-barranco": [
         # Productos exclusivos de Barranco
         {"name": "Combo Artista Barranco", "description": "5 piezas + papas + bebida + postre (especial Barranco)", "price": 55.00, "category": "Combos", "imageUrl": "", "active": True},
         {"name": "Pollo con Ají Barranco", "description": "Pollo crispy con salsa de ají amarillo exclusivo", "price": 28.00, "category": "Pollos", "imageUrl": "", "active": True},
@@ -101,10 +97,3 @@ SEED_PRODUCTS_BY_STORE = {
         {"name": "Coca-Cola 500ml", "description": "Gaseosa bien fría", "price": 7.50, "category": "Bebidas", "imageUrl": "", "active": True},
     ],
 }
-
-
-# === COMPATIBILIDAD: SEED_PRODUCTS y SEED_STORE legacy ===
-# Mantenidos para no romper imports en otros archivos. Usar las nuevas
-# constantes SEED_STORES y SEED_PRODUCTS_BY_STORE en el seed handler.
-SEED_PRODUCTS = SEED_PRODUCTS_BY_STORE[config.DEFAULT_STORE_ID]
-SEED_STORE = SEED_STORES[0]

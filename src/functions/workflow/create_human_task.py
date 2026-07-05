@@ -7,7 +7,6 @@ def lambda_handler(event, _context):
         "tenantId": event["tenantId"],
         "taskId": new_id("tsk"),
         "orderId": event["orderId"],
-        "storeId": event["storeId"],
         "stepName": event["stepName"],
         "requiredRole": event["requiredRole"],
         "status": "PENDING",

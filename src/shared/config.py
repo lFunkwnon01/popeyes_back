@@ -23,8 +23,16 @@ ORDER_EVENTS_TABLE = get_env("ORDER_EVENTS_TABLE")
 ASSETS_BUCKET = get_env("ASSETS_BUCKET")
 ORDER_WORKFLOW_ARN = get_env("ORDER_WORKFLOW_ARN")
 
-DEFAULT_TENANT_ID = "popeyes"
-DEFAULT_STORE_ID = "store-001"
+TENANT_IDS = ["popeyes-miraflores", "popeyes-surco", "popeyes-barranco"]
+DEFAULT_TENANT_ID = "popeyes-miraflores"
+
+ANONYMOUS_USER = {
+    "userId": "anonymous",
+    "tenantId": "",
+    "role": "CLIENT",
+    "email": "",
+    "name": "Anonymous",
+}
 
 ROLES = {
     "CLIENT",

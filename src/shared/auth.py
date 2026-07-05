@@ -58,8 +58,7 @@ def create_token(user):
     expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
     payload = {
         "userId": user["userId"],
-        "tenantId": user["tenantId"],
-        "storeId": user.get("storeId") or "",
+        "tenantId": user.get("tenantId") or "",
         "role": user["role"],
         "email": user["email"],
         "name": user.get("name", ""),

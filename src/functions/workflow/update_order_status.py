@@ -28,7 +28,6 @@ def lambda_handler(event, _context):
             "tenantId": event["tenantId"],
             "eventId": new_id("evt"),
             "orderId": event["orderId"],
-            "storeId": event["storeId"],
             "eventType": "OrderStatusChanged",
             "status": event["status"],
             "createdAt": timestamp,
@@ -41,7 +40,6 @@ def lambda_handler(event, _context):
         "OrderStatusChanged",
         {
             "tenantId": event["tenantId"],
-            "storeId": event["storeId"],
             "orderId": event["orderId"],
             "origin": event.get("origin") or existing_order.get("origin"),
             "externalOrderId": event.get("externalOrderId") or existing_order.get("externalOrderId"),

@@ -17,7 +17,6 @@ def lambda_handler(event, _context):
         "context": {
             "userId": str(claims.get("userId", "")),
             "tenantId": str(claims.get("tenantId", "")),
-            "storeId": str(claims.get("storeId", "")),
             "role": str(claims.get("role", "")),
             "email": str(claims.get("email", "")),
             "name": str(claims.get("name", "")),

@@ -16,7 +16,6 @@ def lambda_handler(event, _context):
         "externalOrderId": detail.get("externalOrderId"),
         "orderId": detail.get("orderId"),
         "tenantId": detail.get("tenantId"),
-        "storeId": detail.get("storeId"),
         "status": detail.get("status"),
         "timestamp": detail.get("timestamp"),
     }

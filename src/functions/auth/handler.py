@@ -35,8 +35,10 @@ def register(payload=Body(...)):
     password = payload.get("password") or ""
     name = (payload.get("name") or "").strip()
     requested_role = (payload.get("role") or "CLIENT").strip().upper()
-    tenant_id = payload.get("tenantId") or config.DEFAULT_TENANT_ID
-    store_id = payload.get("storeId") or config.DEFAULT_STORE_ID
+    # CLIENT es global (sin tenantId fijo); otros roles necesitan una sede.
+    tenant_id = payload.get("tenantId") or "" if requested_role == "CLIENT" else (
+        payload.get("tenantId") or config.DEFAULT_TENANT_ID
+    )
 
     if not email or not password or not name:
         raise HTTPException(status_code=400, detail="email, password and name are required")
@@ -56,7 +58,6 @@ def register(payload=Body(...)):
         "name": name,
         "role": role,
         "tenantId": tenant_id,
-        "storeId": store_id,
         "createdAt": now_iso(),
     }
     users_table().put_item(Item=user)
@@ -69,7 +70,6 @@ def register(payload=Body(...)):
                 "name": user["name"],
                 "role": user["role"],
                 "tenantId": user["tenantId"],
-                "storeId": user["storeId"],
             },
             "token": create_token(user),
             "bootstrapRoleGranted": role != "CLIENT",
@@ -97,8 +97,7 @@ def login(payload=Body(...)):
                 "email": user["email"],
                 "name": user["name"],
                 "role": user["role"],
-                "tenantId": user["tenantId"],
-                "storeId": user.get("storeId") or "",
+                "tenantId": user.get("tenantId") or "",
             },
         }
     )

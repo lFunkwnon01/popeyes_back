@@ -7,7 +7,7 @@ from mangum import Mangum
 from src.shared.app import create_app
 from src.shared.dynamodb import now_iso, products_table, stores_table
 from src.shared.ids import new_id
-from src.shared.permissions import get_current_user, require_roles
+from src.shared.permissions import get_current_user, get_current_user_or_anonymous, require_roles
 from src.shared.response import success_response_safe, success_response
 
 
@@ -24,80 +24,57 @@ app = create_app("catalog-service")
 @app.get("/products")
 def list_products(
     request: Request,
-    storeId: str | None = Query(default=None, description="Filtrar por tienda"),
+    tenantId: str | None = Query(default=None, description="Sede a consultar"),
 ):
     """
-    Lista los productos del tenant actual.
+    Lista los productos de una sede (tenant).
 
-    Reglas de filtrado:
-    - Si el query trae `storeId` y el usuario es CLIENT: devuelve los productos de ESA tienda.
-    - Si el query trae `storeId` y el usuario es worker/admin: valida que sea SU tienda;
-      si no, devuelve 403.
-    - Si NO trae `storeId`:
-        - CLIENT: ve todos los productos del tenant (puede navegar entre tiendas).
-        - worker/admin: solo ve los productos de SU tienda.
+    - Endpoint público (sin JWT): requiere `tenantId` en query (browsing).
+    - ADMIN/worker autenticado: solo puede ver los de SU tenant (ignora el
+      query si no coincide, 403 si pide otra sede).
+    - CLIENT autenticado: puede explorar cualquier sede vía `tenantId`.
     """
-    user = get_current_user(request)
-    tenant_id = user["tenantId"]
+    user = get_current_user_or_anonymous(request)
     role = user["role"]
-    user_store = user.get("storeId") or ""
+    user_tenant = user.get("tenantId") or ""
 
-    # Si el query pide una tienda específica
-    if storeId:
-        if role == "CLIENT":
-            # Cliente puede explorar cualquier tienda
-            target = storeId
-        elif role == "ADMIN":
-            # Admin solo de su tienda
-            if user_store and storeId != user_store:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Admin de tienda {user_store} no puede ver productos de {storeId}",
-                )
-            target = user_store or storeId
-        else:
-            # Workers (COOK, DISPATCHER, etc.) solo de su tienda
-            if user_store and storeId != user_store:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Worker de tienda {user_store} no puede ver productos de {storeId}",
-                )
-            target = user_store or storeId
+    if role in {"ADMIN", "RESTAURANT_WORKER", "COOK", "DISPATCHER", "DELIVERY_DRIVER"}:
+        if not user_tenant:
+            raise HTTPException(status_code=400, detail="Usuario sin sede asignada")
+        if tenantId and tenantId != user_tenant:
+            raise HTTPException(
+                status_code=403,
+                detail=f"No puede ver productos de otra sede ({tenantId})",
+            )
+        target_tenant = user_tenant
     else:
-        # Sin storeId en query
-        if role == "CLIENT":
-            # Sin tienda seleccionada: devolver lista VACÍA (forzamos a elegir tienda)
+        # CLIENT (o anónimo browseando): requiere elegir sede
+        if not tenantId:
             return success_response_safe([])
-        # Workers y admins: solo su tienda
-        target = user_store
-        if not target:
-            return success_response_safe([])
+        target_tenant = tenantId
 
-    # Query al SK compuesto: "storeId#productId"
     response = products_table().query(
-        KeyConditionExpression=Key("tenantId").eq(tenant_id)
-        & Key("storeIdProductId").begins_with(f"{target}#")
+        KeyConditionExpression=Key("tenantId").eq(target_tenant)
     )
-    return success_response_safe(response.get("Items", []))
+    items = response.get("Items", [])
+    for item in items:
+        item.pop("storeIdProductId", None)
+    return success_response_safe(items)
 
 
 @app.post("/products")
 def create_product(request: Request, payload=Body(...)):
     """
-    Crea un producto en la tienda del ADMIN que llama.
-
-    El `storeId` del body es IGNORADO: se fuerza al del JWT del usuario.
-    Esto garantiza que un admin de Miraflores NUNCA pueda crear productos
-    en Surco o Barranco.
+    Crea un producto en la sede (tenant) del ADMIN que llama.
     """
     user = get_current_user(request)
     require_roles(user, {"ADMIN"})
 
-    store_id = user.get("storeId")
-    if not store_id:
+    tenant_id = user.get("tenantId")
+    if not tenant_id:
         raise HTTPException(
             status_code=400,
-            detail="El usuario admin no tiene tienda asignada",
+            detail="El usuario admin no tiene sede asignada",
         )
 
     name = (payload.get("name") or "").strip()
@@ -106,10 +83,12 @@ def create_product(request: Request, payload=Body(...)):
 
     product_id = new_id("prd")
     product = {
-        "tenantId": user["tenantId"],
-        "storeId": store_id,
-        "storeIdProductId": f"{store_id}#{product_id}",  # SK compuesta
+        "tenantId": tenant_id,
         "productId": product_id,
+        # storeIdProductId es la sort key física de la tabla (heredada de
+        # cuando storeId existía). Ya no representa una sede distinta del
+        # tenant, se guarda igual a productId para satisfacer el schema.
+        "storeIdProductId": product_id,
         "name": name,
         "description": payload.get("description") or "",
         "price": _to_decimal(payload.get("price") or 0),
@@ -125,32 +104,49 @@ def create_product(request: Request, payload=Body(...)):
 @app.get("/stores")
 def list_stores(request: Request):
     """
-    Lista todas las tiendas del tenant actual.
-    Disponible para cualquier usuario autenticado (incluyendo CLIENT).
-    El home del frontend usa este endpoint para mostrar el selector de sede.
+    Directorio público de todas las sedes (tenants) existentes.
+
+    En este modelo, cada sede ES un tenant (tenantId = "popeyes-<distrito>"),
+    así que listar "todas las sedes" es cruzar tenants a propósito: es la
+    única operación de este backend que no está scoped a un solo tenant,
+    porque es justamente la pantalla donde el usuario ELIGE su tenant.
+    No requiere JWT (browsing antes de login).
     """
-    user = get_current_user(request)
-    response = stores_table().query(KeyConditionExpression=Key("tenantId").eq(user["tenantId"]))
-    return success_response_safe(response.get("Items", []))
+    response = stores_table().scan()
+    items = []
+    for item in response.get("Items", []):
+        if not item.get("active", True):
+            continue
+        # storeId es un artefacto interno de la sort key física; no es un
+        # concepto de negocio en este modelo (tenantId ya identifica la sede).
+        item.pop("storeId", None)
+        items.append(item)
+    return success_response_safe(items)
 
 
 @app.post("/stores")
 def create_store(request: Request, payload=Body(...)):
     """
-    Crea una nueva tienda en el tenant actual.
-    Solo permitido para ADMIN (que gestiona el catálogo multi-sede).
+    Registra una nueva sede (tenant) en el directorio. Solo ADMIN.
+    El tenantId se toma del propio JWT del admin (una sede = su propio tenant).
     """
     user = get_current_user(request)
     require_roles(user, {"ADMIN"})
 
+    tenant_id = user.get("tenantId")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="El usuario admin no tiene sede asignada")
+
     name = (payload.get("name") or "").strip()
-    store_id = (payload.get("storeId") or "").strip()
-    if not name or not store_id:
-        raise HTTPException(status_code=400, detail="name and storeId are required")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
 
     store = {
-        "tenantId": user["tenantId"],
-        "storeId": store_id,
+        "tenantId": tenant_id,
+        # storeId es la sort key física de la tabla (heredada de cuando
+        # existían varias tiendas por tenant). Ahora 1 tenant = 1 sede,
+        # así que se guarda igual a tenantId para satisfacer el schema.
+        "storeId": tenant_id,
         "name": name,
         "address": payload.get("address") or "",
         "active": bool(payload.get("active", True)),

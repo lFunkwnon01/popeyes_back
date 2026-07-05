@@ -8,7 +8,7 @@ from mangum import Mangum
 from src.shared import config
 from src.shared.app import create_app
 from src.shared.dynamodb import now_iso, orders_table, workflow_tasks_table
-from src.shared.permissions import get_current_user
+from src.shared.permissions import get_current_user, resolve_tenant_id
 from src.shared.response import success_response_safe, success_response
 
 
@@ -28,26 +28,19 @@ def user_can_access_task(user, task):
     """
     Verifica si el user puede ver/completar esta tarea.
 
+    Al estar la tarea ya scoped por tenantId (una sede), lo único que
+    falta validar es el rol requerido:
     - CLIENT: la tarea es suya (el order es suyo)
     - Workers (COOK/DISPATCHER/DRIVER/RESTAURANT_WORKER): la tarea requiere
-      su rol Y la tarea es de su tienda
-    - ADMIN: la tarea es de su tienda
+      su rol
+    - ADMIN: puede ver cualquier tarea de su sede
     """
-    user_store = user.get("storeId") or ""
-
-    # Filtro de tienda: cualquier usuario con tienda asignada solo ve su tienda
-    if user_store and task.get("storeId") and task.get("storeId") != user_store:
-        return False
-
     if user["role"] == "CLIENT":
         order = orders_table().get_item(Key={"tenantId": task["tenantId"], "orderId": task["orderId"]}).get("Item")
         return bool(order and order.get("customerId") == user["userId"])
 
-    # Workers: la tarea requiere su rol
-    if task.get("requiredRole") != user["role"]:
-        # ADMIN puede ver tareas de cualquier rol de su tienda
-        if user["role"] != "ADMIN":
-            return False
+    if task.get("requiredRole") != user["role"] and user["role"] != "ADMIN":
+        return False
 
     return True
 
@@ -55,8 +48,9 @@ def user_can_access_task(user, task):
 @app.get("/tasks")
 def list_tasks(request: Request):
     user = get_current_user(request)
+    tenant_id = resolve_tenant_id(user, request)
     response = workflow_tasks_table().query(
-        KeyConditionExpression=Key("tenantId").eq(user["tenantId"]),
+        KeyConditionExpression=Key("tenantId").eq(tenant_id),
     )
     status_filter = request.query_params.get("status") or "PENDING"
     order_id_filter = request.query_params.get("orderId")
@@ -78,7 +72,8 @@ def list_tasks(request: Request):
 @app.post("/tasks/{task_id}/complete")
 def complete_task(task_id: str, request: Request, payload=Body(default=None)):
     user = get_current_user(request)
-    task = get_task_or_404(user["tenantId"], task_id)
+    tenant_id = resolve_tenant_id(user, request)
+    task = get_task_or_404(tenant_id, task_id)
 
     if not user_can_access_task(user, task):
         raise HTTPException(status_code=403, detail="Forbidden")
