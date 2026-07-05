@@ -193,8 +193,9 @@ functions:
       - httpApi:
           path: /tasks/{taskId}/complete
           method: POST
-          authorizer:
-            name: lambdaAuthorizer
+          # Sin authorizer: acepta x-api-key (Rappi/GCP) o JWT, validados
+          # a mano dentro del handler (ver tasks/handler.py). GET /tasks
+          # arriba sigue protegido por lambdaAuthorizer normal.
 
   dashboard:
     handler: src/functions/dashboard/handler.lambda_handler

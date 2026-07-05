@@ -7,6 +7,7 @@ from mangum import Mangum
 
 from src.shared import config
 from src.shared.app import create_app
+from src.shared.auth import decode_token, get_bearer_token
 from src.shared.dynamodb import now_iso, orders_table, workflow_tasks_table
 from src.shared.permissions import get_current_user, resolve_tenant_id
 from src.shared.response import success_response_safe, success_response
@@ -69,14 +70,57 @@ def list_tasks(request: Request):
     return success_response_safe(items)
 
 
+def _get_user_from_jwt_manual(request: Request):
+    """
+    Decodifica el JWT a mano. Esta ruta ya NO tiene lambdaAuthorizer (ver
+    serverless.yml), así que request.scope no trae el contexto del
+    autorizador — hay que repetir lo que hacía authorizer/handler.py.
+    """
+    headers = request.scope.get("aws.event", {}).get("headers", {}) or {}
+    token = get_bearer_token(headers)
+    if not token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        claims = decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {
+        "userId": claims.get("userId"),
+        "tenantId": claims.get("tenantId") or "",
+        "role": claims.get("role"),
+        "email": claims.get("email"),
+        "name": claims.get("name", ""),
+    }
+
+
 @app.post("/tasks/{task_id}/complete")
 def complete_task(task_id: str, request: Request, payload=Body(default=None)):
-    user = get_current_user(request)
-    tenant_id = resolve_tenant_id(user, request)
-    task = get_task_or_404(tenant_id, task_id)
+    """
+    Completa una tarea del workflow. Dos formas de autenticarse (la ruta
+    ya no tiene lambdaAuthorizer, se valida todo aquí adentro):
 
-    if not user_can_access_task(user, task):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    1. x-api-key == RAPPI_API_KEY: llamada externa (Rappi/GCP). Sin JWT,
+       sin chequeo de rol — requiere `tenantId` explícito en el body o
+       query, porque no hay usuario del cual resolverlo.
+    2. JWT (Authorization: Bearer ...): flujo normal de un worker/admin/
+       cliente de Popeyes, con el mismo chequeo de rol de siempre.
+    """
+    headers = request.scope.get("aws.event", {}).get("headers", {}) or {}
+    api_key = headers.get("x-api-key") or headers.get("X-Api-Key")
+
+    if api_key and api_key == config.RAPPI_API_KEY:
+        tenant_id = (payload or {}).get("tenantId") or request.query_params.get("tenantId")
+        if not tenant_id:
+            raise HTTPException(status_code=400, detail="tenantId es requerido")
+        task = get_task_or_404(tenant_id, task_id)
+        completed_by = "rappi-integration"
+    else:
+        user = _get_user_from_jwt_manual(request)
+        tenant_id = resolve_tenant_id(user, request)
+        task = get_task_or_404(tenant_id, task_id)
+        if not user_can_access_task(user, task):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        completed_by = user["userId"]
 
     if task.get("status") != "PENDING":
         raise HTTPException(status_code=409, detail="Task is not pending")
@@ -90,7 +134,7 @@ def complete_task(task_id: str, request: Request, payload=Body(default=None)):
         ExpressionAttributeValues={
             ":status": "COMPLETED",
             ":completedAt": completed_at,
-            ":completedBy": user["userId"],
+            ":completedBy": completed_by,
             ":pending": "PENDING",
         },
     )
@@ -99,7 +143,7 @@ def complete_task(task_id: str, request: Request, payload=Body(default=None)):
         "taskId": task["taskId"],
         "stepName": task["stepName"],
         "completedAt": completed_at,
-        "completedBy": user["userId"],
+        "completedBy": completed_by,
         "notes": (payload or {}).get("notes", ""),
     }
     _stepfunctions.send_task_success(taskToken=task["taskToken"], output=json.dumps(callback_payload))
