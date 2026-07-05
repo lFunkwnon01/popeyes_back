@@ -196,6 +196,12 @@ functions:
           # Sin authorizer: acepta x-api-key (Rappi/GCP) o JWT, validados
           # a mano dentro del handler (ver tasks/handler.py). GET /tasks
           # arriba sigue protegido por lambdaAuthorizer normal.
+      - httpApi:
+          path: /tasks/rappi
+          method: GET
+          # Sin authorizer: solo x-api-key, validado a mano en el handler.
+          # Permite a Rappi descubrir el taskId pendiente de su pedido
+          # (por tenantId + externalOrderId) antes de completarlo.
 
   dashboard:
     handler: src/functions/dashboard/handler.lambda_handler

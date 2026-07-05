@@ -70,6 +70,47 @@ def list_tasks(request: Request):
     return success_response_safe(items)
 
 
+@app.get("/tasks/rappi")
+def list_tasks_rappi(request: Request):
+    """
+    Lista las tareas de un pedido de Rappi sin JWT (x-api-key), para que
+    el simulador pueda descubrir el taskId pendiente y luego completarlo
+    vía POST /tasks/{taskId}/complete.
+
+    Query params requeridos: tenantId, externalOrderId.
+    Query param opcional: status (default "PENDING", igual que GET /tasks).
+    """
+    headers = request.scope.get("aws.event", {}).get("headers", {}) or {}
+    api_key = headers.get("x-api-key") or headers.get("X-Api-Key")
+    if api_key != config.RAPPI_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid x-api-key")
+
+    tenant_id = request.query_params.get("tenantId")
+    external_order_id = request.query_params.get("externalOrderId")
+    if not tenant_id or not external_order_id:
+        raise HTTPException(status_code=400, detail="tenantId y externalOrderId son requeridos")
+
+    # No hay GSI sobre externalOrderId: se hace Query por tenantId (partition
+    # key real) y se filtra en memoria. Con el volumen de pedidos Rappi de
+    # este proyecto es suficiente; evita agregar un GSI nuevo a la tabla.
+    orders = orders_table().query(
+        KeyConditionExpression=Key("tenantId").eq(tenant_id),
+    ).get("Items", [])
+    order = next((o for o in orders if o.get("externalOrderId") == external_order_id), None)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    tasks = workflow_tasks_table().query(
+        IndexName="orderId-index",
+        KeyConditionExpression=Key("orderId").eq(order["orderId"]),
+    ).get("Items", [])
+
+    status_filter = request.query_params.get("status") or "PENDING"
+    items = [t for t in tasks if not status_filter or t.get("status") == status_filter]
+    items.sort(key=lambda item: item.get("startedAt", ""))
+    return success_response_safe(items)
+
+
 def _get_user_from_jwt_manual(request: Request):
     """
     Decodifica el JWT a mano. Esta ruta ya NO tiene lambdaAuthorizer (ver
