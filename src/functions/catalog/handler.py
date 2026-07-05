@@ -101,6 +101,93 @@ def create_product(request: Request, payload=Body(...)):
     return success_response_safe(product, 201)
 
 
+_PRODUCT_FIELD_ALIASES = {
+    "name": "#name",
+    "description": "#description",
+    "price": "#price",
+    "category": "#category",
+    "imageUrl": "#imageUrl",
+    "active": "#active",
+}
+
+
+@app.put("/products/{product_id}")
+def update_product(product_id: str, request: Request, payload=Body(...)):
+    """
+    Edita un producto de la sede (tenant) del ADMIN que llama (nombre,
+    descripción, precio, categoría, imageUrl, active). Solo puede editar
+    productos de su propia sede; no acepta tenantId del body.
+    """
+    user = get_current_user(request)
+    require_roles(user, {"ADMIN"})
+
+    tenant_id = user.get("tenantId")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="El usuario admin no tiene sede asignada")
+
+    existing = products_table().get_item(
+        Key={"tenantId": tenant_id, "storeIdProductId": product_id}
+    ).get("Item")
+    if not existing:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    updates = {}
+    if "name" in payload:
+        name = (payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name no puede estar vacío")
+        updates["name"] = name
+    if "description" in payload:
+        updates["description"] = payload.get("description") or ""
+    if "price" in payload:
+        updates["price"] = _to_decimal(payload.get("price") or 0)
+    if "category" in payload:
+        updates["category"] = payload.get("category") or "General"
+    if "imageUrl" in payload:
+        updates["imageUrl"] = payload.get("imageUrl") or ""
+    if "active" in payload:
+        updates["active"] = bool(payload.get("active"))
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No hay campos para actualizar")
+
+    set_parts = [f"{_PRODUCT_FIELD_ALIASES[k]} = :{k}" for k in updates]
+    products_table().update_item(
+        Key={"tenantId": tenant_id, "storeIdProductId": product_id},
+        UpdateExpression="SET " + ", ".join(set_parts),
+        ExpressionAttributeNames={_PRODUCT_FIELD_ALIASES[k]: k for k in updates},
+        ExpressionAttributeValues={f":{k}": v for k, v in updates.items()},
+    )
+
+    updated = products_table().get_item(
+        Key={"tenantId": tenant_id, "storeIdProductId": product_id}
+    ).get("Item")
+    updated.pop("storeIdProductId", None)
+    return success_response_safe(updated)
+
+
+@app.delete("/products/{product_id}")
+def delete_product(product_id: str, request: Request):
+    """
+    Elimina un producto de la sede (tenant) del ADMIN que llama.
+    """
+    user = get_current_user(request)
+    require_roles(user, {"ADMIN"})
+
+    tenant_id = user.get("tenantId")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="El usuario admin no tiene sede asignada")
+
+    existing = products_table().get_item(
+        Key={"tenantId": tenant_id, "storeIdProductId": product_id}
+    ).get("Item")
+    if not existing:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    products_table().delete_item(Key={"tenantId": tenant_id, "storeIdProductId": product_id})
+    return success_response_safe({"productId": product_id, "deleted": True})
+
+
 @app.get("/stores")
 def list_stores(request: Request):
     """

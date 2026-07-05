@@ -138,6 +138,16 @@ functions:
           authorizer:
             name: lambdaAuthorizer
       - httpApi:
+          path: /products/{productId}
+          method: PUT
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
+          path: /products/{productId}
+          method: DELETE
+          authorizer:
+            name: lambdaAuthorizer
+      - httpApi:
           path: /stores
           method: GET
       - httpApi:
