@@ -21,7 +21,6 @@ ORDERS_TABLE = get_env("ORDERS_TABLE")
 WORKFLOW_TASKS_TABLE = get_env("WORKFLOW_TASKS_TABLE")
 ORDER_EVENTS_TABLE = get_env("ORDER_EVENTS_TABLE")
 ASSETS_BUCKET = get_env("ASSETS_BUCKET")
-ORDER_WORKFLOW_ARN = get_env("ORDER_WORKFLOW_ARN")
 
 TENANT_IDS = ["popeyes-miraflores", "popeyes-surco", "popeyes-barranco"]
 DEFAULT_TENANT_ID = "popeyes-miraflores"
