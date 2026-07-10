@@ -207,6 +207,12 @@ functions:
           # Sin authorizer: solo x-api-key, validado a mano en el handler.
           # Permite a Rappi descubrir el taskId pendiente de su pedido
           # (por tenantId + externalOrderId) antes de completarlo.
+      - httpApi:
+          path: /tasks/rappi/confirm-by-external-order
+          method: POST
+          # Sin authorizer: solo x-api-key. Completa CONFIRM_RECEPTION en un
+          # solo request (busca el task por externalOrderId internamente),
+          # sin que Rappi necesite el taskId como en GET /tasks/rappi + complete.
 
   dashboard:
     handler: src/functions/dashboard/handler.lambda_handler

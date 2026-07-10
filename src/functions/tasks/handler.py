@@ -25,6 +25,40 @@ def get_task_or_404(tenant_id, task_id):
     return task
 
 
+def _complete_task(task, completed_by, notes=""):
+    """
+    Marca la tarea COMPLETED y dispara send_task_success para desbloquear
+    el siguiente paso del state machine. Compartido por POST /tasks/{taskId}/complete
+    y POST /tasks/rappi/confirm-by-external-order.
+    """
+    if task.get("status") != "PENDING":
+        raise HTTPException(status_code=409, detail="Task is not pending")
+
+    completed_at = now_iso()
+    workflow_tasks_table().update_item(
+        Key={"tenantId": task["tenantId"], "taskId": task["taskId"]},
+        UpdateExpression="SET #status = :status, completedAt = :completedAt, completedBy = :completedBy",
+        ConditionExpression="#status = :pending",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={
+            ":status": "COMPLETED",
+            ":completedAt": completed_at,
+            ":completedBy": completed_by,
+            ":pending": "PENDING",
+        },
+    )
+
+    callback_payload = {
+        "taskId": task["taskId"],
+        "stepName": task["stepName"],
+        "completedAt": completed_at,
+        "completedBy": completed_by,
+        "notes": notes,
+    }
+    _stepfunctions.send_task_success(taskToken=task["taskToken"], output=json.dumps(callback_payload))
+    return success_response_safe({"taskId": task["taskId"], "status": "COMPLETED", "completedAt": completed_at})
+
+
 def user_can_access_task(user, task):
     """
     Verifica si el user puede ver/completar esta tarea.
@@ -163,32 +197,57 @@ def complete_task(task_id: str, request: Request, payload=Body(default=None)):
             raise HTTPException(status_code=403, detail="Forbidden")
         completed_by = user["userId"]
 
-    if task.get("status") != "PENDING":
-        raise HTTPException(status_code=409, detail="Task is not pending")
+    return _complete_task(task, completed_by, notes=(payload or {}).get("notes", ""))
 
-    completed_at = now_iso()
-    workflow_tasks_table().update_item(
-        Key={"tenantId": task["tenantId"], "taskId": task["taskId"]},
-        UpdateExpression="SET #status = :status, completedAt = :completedAt, completedBy = :completedBy",
-        ConditionExpression="#status = :pending",
-        ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={
-            ":status": "COMPLETED",
-            ":completedAt": completed_at,
-            ":completedBy": completed_by,
-            ":pending": "PENDING",
-        },
+
+@app.post("/tasks/rappi/confirm-by-external-order")
+def confirm_task_by_external_order(request: Request, payload=Body(...)):
+    """
+    Completa el paso CONFIRM_RECEPTION de un pedido de Rappi identificándolo
+    por externalOrderId, sin que Rappi necesite conocer el taskId interno
+    (a diferencia de GET /tasks/rappi + POST /complete, que son dos pasos).
+
+    Solo x-api-key (sin JWT), igual que el resto de rutas /tasks/rappi/*.
+    Body: { externalOrderId, tenantId }.
+    """
+    headers = request.scope.get("aws.event", {}).get("headers", {}) or {}
+    api_key = headers.get("x-api-key") or headers.get("X-Api-Key")
+    if api_key != config.RAPPI_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid x-api-key")
+
+    tenant_id = payload.get("tenantId")
+    external_order_id = payload.get("externalOrderId")
+    if not tenant_id or not external_order_id:
+        raise HTTPException(status_code=400, detail="tenantId y externalOrderId son requeridos")
+
+    # Mismo patrón que GET /tasks/rappi: sin GSI sobre externalOrderId,
+    # Query por tenantId (partition key) y filtro en memoria. La tabla de
+    # tasks es chica, así que se escanea por tenantId igual para el filtro
+    # de stepName/status en vez de usar el GSI de orderId-index.
+    orders = orders_table().query(
+        KeyConditionExpression=Key("tenantId").eq(tenant_id),
+    ).get("Items", [])
+    order = next((o for o in orders if o.get("externalOrderId") == external_order_id), None)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    tasks = workflow_tasks_table().query(
+        KeyConditionExpression=Key("tenantId").eq(tenant_id),
+    ).get("Items", [])
+    task = next(
+        (
+            t
+            for t in tasks
+            if t.get("orderId") == order["orderId"]
+            and t.get("stepName") == "CONFIRM_RECEPTION"
+            and t.get("status") == "PENDING"
+        ),
+        None,
     )
+    if not task:
+        raise HTTPException(status_code=404, detail="Pending CONFIRM_RECEPTION task not found")
 
-    callback_payload = {
-        "taskId": task["taskId"],
-        "stepName": task["stepName"],
-        "completedAt": completed_at,
-        "completedBy": completed_by,
-        "notes": (payload or {}).get("notes", ""),
-    }
-    _stepfunctions.send_task_success(taskToken=task["taskToken"], output=json.dumps(callback_payload))
-    return success_response_safe({"taskId": task["taskId"], "status": "COMPLETED", "completedAt": completed_at})
+    return _complete_task(task, "rappi-integration")
 
 
 lambda_handler = Mangum(app)
