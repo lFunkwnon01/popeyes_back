@@ -1,9 +1,12 @@
+import uuid
 from decimal import Decimal
 
+import boto3
 from boto3.dynamodb.conditions import Key
 from fastapi import Body, HTTPException, Query, Request
 from mangum import Mangum
 
+from src.shared import config
 from src.shared.app import create_app
 from src.shared.dynamodb import now_iso, products_table, stores_table
 from src.shared.ids import new_id
@@ -99,6 +102,46 @@ def create_product(request: Request, payload=Body(...)):
     }
     products_table().put_item(Item=product)
     return success_response_safe(product, 201)
+
+
+@app.post("/upload-url")
+def generate_upload_url(request: Request, payload=Body(...)):
+    """
+    Genera una presigned URL de S3 para que el frontend suba la imagen de
+    un producto directo al bucket (sin pasar el binario por Lambda).
+
+    Flujo: POST /upload-url -> PUT binario a uploadUrl -> POST /products
+    con imageUrl = publicUrl.
+    """
+    user = get_current_user(request)
+    require_roles(user, {"ADMIN"})
+
+    tenant_id = user.get("tenantId")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="El usuario admin no tiene sede asignada")
+
+    filename = payload.get("filename") or "image.jpg"
+    content_type = payload.get("contentType") or "image/jpeg"
+    ext = filename.rsplit(".", 1)[-1] if "." in filename else "jpg"
+    object_key = f"assets/{tenant_id}/{uuid.uuid4().hex}.{ext}"
+
+    s3 = boto3.client("s3", region_name=config.REGION)
+    upload_url = s3.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": config.ASSETS_BUCKET,
+            "Key": object_key,
+            "ContentType": content_type,
+        },
+        ExpiresIn=3600,
+    )
+    public_url = f"https://{config.ASSETS_BUCKET}.s3.{config.REGION}.amazonaws.com/{object_key}"
+
+    return success_response_safe({
+        "uploadUrl": upload_url,
+        "objectKey": object_key,
+        "publicUrl": public_url,
+    })
 
 
 _PRODUCT_FIELD_ALIASES = {

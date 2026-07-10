@@ -1,70 +1,70 @@
 ---
 name: popeyes-rappi-integration
-description: Contract between the Rappi simulator (GCP) and the Popeyes backend (AWS). Covers auth via x-api-key, /orders/rappi request body, and the OrderStatusChanged webhook back to GCP. Use ONLY when wiring up the Rappi simulator or changing the external integration.
+description: Contract between the Rappi simulator (GCP) and the Popeyes backend (AWS). Covers auth via x-api-key for order creation AND task completion, the /orders/rappi and /tasks/rappi + /tasks/{id}/complete request bodies, and the OrderStatusChanged webhook back to GCP. Use ONLY when wiring up the Rappi simulator or changing the external integration.
 ---
 
 # Popeyes ↔ Rappi integration
 
-The Popeyes backend **does NOT deploy anything in GCP**. It only defines the contract. The `simulacion_rappi` frontend lives in GCP (Firebase Hosting) and is the system that simulates the Rappi app.
+The Popeyes backend (`popeyes_back` on GitHub, local dir `rappi/`) **does NOT deploy anything in GCP**. It only defines the contract. The Rappi simulator (`popeyes_frontend` on GitHub? — no: the GCP-side Rappi simulator is a separate project, not `rappi_frontend`; `rappi_frontend` is the Popeyes customer/worker web app) lives in GCP and is the system that simulates the Rappi app placing and tracking orders.
 
-## Flow
+## Flow (now 3 touchpoints, not 2)
 
 ```
-[Rappi simulator (GCP)]                  [Popeyes backend (AWS)]
-   │                                              │
-   │  POST /orders/rappi                          │
-   │  Headers: x-api-key, X-Tenant-Id, X-Store-Id │
-   │─────────────────────────────────────────────▶│
-   │                                              │  validates x-api-key vs RAPPI_API_KEY
-   │                                              │  persists order, starts Step Functions
-   │  201 { orderId, status, createdAt, total }   │
-   │◀─────────────────────────────────────────────│
-   │                                              │
-   │   …time passes, workers advance the order…   │
-   │                                              │
-   │                       (workers call          │
-   │                       /tasks/{id}/complete)  │
-   │                                              │  updateOrderStatus emits
-   │                                              │  OrderStatusChanged to EventBridge
-   │                                              │
-   │                       notifyRappiStatus Lambda│
-   │                       (EventBridge target)   │
-   │                                              │  POSTs status to RAPPI_STATUS_API_URL
-   │◀─────────────────────────────────────────────│  (the GCP webhook)
-   │  200 OK                                       │
+[Rappi simulator (GCP)]                       [Popeyes backend (AWS)]
+   │                                                    │
+   │  1. POST /orders/rappi (x-api-key)                 │
+   │────────────────────────────────────────────────────▶│  creates order, starts workflow
+   │  201 { orderId, status, ... }                        │
+   │◀────────────────────────────────────────────────────│
+   │                                                    │
+   │        … workers advance the order through          │
+   │        RECEIVE → COOK → PACK → DELIVER stages …      │
+   │        (each UpdateStatus step fires                │
+   │        notifyRappiStatus → RAPPI_STATUS_API_URL)      │
+   │                                                    │
+   │  2. GET /tasks/rappi?tenantId=&externalOrderId=     │  (x-api-key) discover pending taskId
+   │────────────────────────────────────────────────────▶│  for the CONFIRM_RECEPTION stage
+   │  200 [ { taskId, stepName: "CONFIRM_RECEPTION" } ]    │
+   │◀────────────────────────────────────────────────────│
+   │                                                    │
+   │  3. POST /tasks/{taskId}/complete (x-api-key)        │  Rappi confirms delivery/reception
+   │────────────────────────────────────────────────────▶│  on the customer's behalf
+   │  200 { status: "COMPLETED" }                          │
+   │◀────────────────────────────────────────────────────│
 ```
 
-## Auth — `/orders/rappi`
+Step 2+3 are how Rappi (not a real Popeyes CLIENT user) completes the final `CONFIRM_RECEPTION` human-task stage of the workflow — see [[popeyes-workflow]] for the full state machine. Steps 2/3 can in principle be used for *any* stage's task if Rappi ever needs to act on behalf of a worker, but in practice the frontend's own workers complete stages 1–4.
 
-- **Header required**: `x-api-key: <RAPPI_API_KEY>`
-- **NO JWT**: the external system (Rappi) does not have Popeyes users, so the authorizer is bypassed and the API key is checked in the handler itself.
-- The key is read from `headers.get("x-api-key") or headers.get("X-Api-Key")` — case-insensitive.
+## Auth — shared `x-api-key`, used on 3 endpoints now
+
+- **Header required**: `x-api-key: <RAPPI_API_KEY>` on `POST /orders/rappi`, `GET /tasks/rappi`, and `POST /tasks/{taskId}/complete` (this last one also accepts a normal Popeyes JWT — see [[popeyes-workflow]] for the dual-auth logic).
+- **NO JWT for the Rappi path**: the external system does not have Popeyes users, so these 3 routes have no `lambdaAuthorizer` in `serverless.yml`; the key is checked by hand in each handler.
+- Read case-insensitively: `headers.get("x-api-key") or headers.get("X-Api-Key")`.
 - A 401 is returned if it does not match `RAPPI_API_KEY`.
+- **As of the last working session, `RAPPI_API_KEY` is still the placeholder default `change-this-rappi-key`** — it has not been synced with a real shared secret between AWS and the GCP `terraform.tfvars`.
 
 ## Request body — `POST /orders/rappi`
 
 ```json
 {
-  "tenantId": "popeyes",
-  "storeId": "store-001",
+  "tenantId": "popeyes-miraflores",
   "customerId": "rappi-customer-xyz",
   "customerName": "Lucía Vargas",
-  "customerPhone": "+51 999 999 999",
   "items": [
-    { "productId": "p-bucket-8", "name": "Bucket 8 piezas", "price": 64.9, "quantity": 1 }
+    { "productId": "prd-xxxx", "name": "Combo 2 piezas", "price": 23.9, "quantity": 1 }
   ],
-  "total": 64.9,
+  "total": 23.9,
   "deliveryAddress": "Av. Javier Prado 1234, San Isidro",
   "paymentMethod": "TARJETA",
-  "origin": "RAPPI",
   "externalOrderId": "RAPPI-AB12CD"
 }
 ```
 
-- `externalOrderId` is **required** (400 if missing).
-- `tenantId` and `storeId` fall back to `DEFAULT_TENANT_ID` and `DEFAULT_STORE_ID` from env if omitted.
+- **`tenantId` is now a sede, not a brand** — must be one of `popeyes-miraflores`, `popeyes-surco`, `popeyes-barranco` (see [[popeyes-backend]] for the multi-tenancy model). If omitted, falls back to `config.DEFAULT_TENANT_ID` (`popeyes-miraflores`).
+- There is no `storeId` field anymore — it was retired along with the old "1 tenant = multiple stores" model.
+- `externalOrderId` is **required** (400 if missing) — it's the only link Rappi has back to its own order after this call, since it never sees Popeyes's internal `orderId` again except in this response.
 - `customerId` falls back to `"rappi-customer"`.
-- `origin` MUST be exactly `"RAPPI"` (the backend stores it verbatim).
+- `origin` is set to `"RAPPI"` server-side — not accepted from the payload.
 
 ## Response — 201 Created
 
@@ -73,17 +73,18 @@ The Popeyes backend **does NOT deploy anything in GCP**. It only defines the con
   "success": true,
   "data": {
     "orderId": "ord-lx9k2a-1234",
-    "tenantId": "popeyes",
-    "storeId": "store-001",
+    "tenantId": "popeyes-miraflores",
     "customerId": "rappi-customer-xyz",
     "customerName": "Lucía Vargas",
     "origin": "RAPPI",
     "externalOrderId": "RAPPI-AB12CD",
     "items": [...],
-    "total": 64.9,
+    "total": 23.9,
     "status": "ORDER_CREATED",
-    "createdAt": "2026-06-27T16:00:00.000Z",
-    "updatedAt": "2026-06-27T16:00:00.000Z",
+    "deliveryAddress": "...",
+    "paymentMethod": "TARJETA",
+    "createdAt": "...",
+    "updatedAt": "...",
     "completedAt": null
   }
 }
@@ -91,33 +92,32 @@ The Popeyes backend **does NOT deploy anything in GCP**. It only defines the con
 
 ## Status check — `GET /orders/{orderId}`
 
-The Rappi simulator polls this endpoint to read the current status. Requires the same `x-api-key`. (The simulator currently calls `/orders/{orderId}/status` — update it to `/orders/{orderId}` to match the actual contract.)
+Requires the same `x-api-key`. Response: same shape as the 201 body above. `GET /tasks/rappi` (see the flow diagram) is the alternative/complementary way to check *task-level* progress rather than just order status.
 
-Response: same shape as the 201 body above. The simulator watches the `status` field.
+## Status webhook back to GCP — `notifyRappiStatus`
 
-## Status webhook back to GCP
-
-Every time `updateOrderStatus` runs (i.e. every worker advances a stage), the Lambda `notifyRappiStatus` is triggered by EventBridge (pattern: `source: popeyes.workflow`, `detail-type: OrderStatusChanged`). That Lambda POSTs to `RAPPI_STATUS_API_URL` with:
+Every time `updateOrderStatus` runs (a worker advances a stage, OR Rappi itself completes `CONFIRM_RECEPTION` via step 3 above), the Lambda `notifyRappiStatus` is triggered by EventBridge (pattern: `source: popeyes.workflow`, `detail-type: OrderStatusChanged`, bus `popeyes-orders-bus-${stage}`). That Lambda POSTs to `RAPPI_STATUS_API_URL` with:
 
 ```json
 {
   "orderId": "ord-...",
   "externalOrderId": "RAPPI-AB12CD",
+  "tenantId": "popeyes-miraflores",
   "status": "COOKED",
-  "stepName": "COOK_ORDER",
-  "completedBy": "Juan Cocina"
+  "timestamp": "..."
 }
 ```
 
-If `RAPPI_STATUS_API_URL` is empty, the Lambda **does nothing** (does not fail). This is intentional so local dev works without a GCP webhook receiver.
+If `RAPPI_STATUS_API_URL` is empty, the Lambda **does nothing** (does not fail). This is intentional so local/dev testing works without a live GCP webhook receiver. **As of the last session this env var is empty in the deployed stack** — the AWS→GCP direction of this integration is defined but not actually wired to a real GCP endpoint yet. No auth/secret is sent on this outbound call (`Content-Type: application/json` only) — whatever GCP endpoint eventually receives it needs its own protection scheme (shared secret in header/body, IP allowlist, etc.), since nothing here authenticates AWS to GCP.
 
 ## Setting values in the Rappi simulator
 
-After deploying the backend, get the API Gateway URL with `npx serverless info --stage dev` and the `RAPPI_API_KEY` from the deploy output (or from the `.env` you set before deploying). Configure both in the simulator's **Config** tab.
+Get the API Gateway URL with `npx serverless info --stage dev3` (currently `https://lzlfyhmww8.execute-api.us-east-1.amazonaws.com`) and the `RAPPI_API_KEY` from `.env`. Configure both in the simulator's config, and configure `RAPPI_STATUS_API_URL` on the AWS side to point at whatever the GCP receiver's real URL is once it exists.
 
 ## What the backend does NOT do
 
 - It does not authenticate `customerId` (Rappi passes it as-is).
 - It does not verify that the items exist in the products table (it trusts the payload).
-- It does not call back to GCP if the env var is empty.
+- It does not call back to GCP if `RAPPI_STATUS_API_URL` is empty.
 - It does not retry failed status webhooks (one-shot; manual recovery needed).
+- It does not restrict which stage Rappi can complete via `POST /tasks/{taskId}/complete` — the endpoint trusts the caller with a valid `x-api-key` to complete any pending task in the tenant, not just `CONFIRM_RECEPTION`.

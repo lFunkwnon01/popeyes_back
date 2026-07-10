@@ -157,6 +157,11 @@ functions:
           method: POST
           authorizer:
             name: lambdaAuthorizer
+      - httpApi:
+          path: /upload-url
+          method: POST
+          authorizer:
+            name: lambdaAuthorizer
 
   orders:
     handler: src/functions/orders/handler.lambda_handler
@@ -614,11 +619,15 @@ resources:
       Type: AWS::S3::Bucket
       Properties:
         BucketName: !Sub "popeyes-assets-${self:custom.stage}-${AWS::AccountId}"
+        # Los ACLs públicos siguen bloqueados (BlockPublicAcls/IgnorePublicAcls);
+        # solo se habilita política de bucket (BlockPublicPolicy/RestrictPublicBuckets
+        # en false) para que AssetsBucketPublicReadPolicy pueda dar GetObject
+        # público, scoped únicamente al prefijo assets/* (imágenes de producto).
         PublicAccessBlockConfiguration:
           BlockPublicAcls: true
-          BlockPublicPolicy: true
+          BlockPublicPolicy: false
           IgnorePublicAcls: true
-          RestrictPublicBuckets: true
+          RestrictPublicBuckets: false
         CorsConfiguration:
           CorsRules:
             - AllowedHeaders:
@@ -631,6 +640,19 @@ resources:
                 - http://localhost:5173
                 - http://localhost:3000
                 - "*"
+
+    # Lectura pública de imágenes de producto subidas vía /upload-url.
+    # Scoped a assets/* (no todo el bucket) para no exponer nada fuera de ese prefijo.
+    AssetsBucketPublicReadPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref AssetsBucket
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Principal: "*"
+              Action: s3:GetObject
+              Resource: !Sub "arn:aws:s3:::popeyes-assets-${self:custom.stage}-${AWS::AccountId}/assets/*"
   Outputs:
     HealthUrl:
       Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/health"
