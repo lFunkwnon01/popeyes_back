@@ -50,7 +50,7 @@ provider:
     REGION: ${self:custom.region}
     JWT_SECRET: ${env:JWT_SECRET, 'change-this-secret'}
     RAPPI_API_KEY: ${env:RAPPI_API_KEY, 'change-this-rappi-key'}
-    RAPPI_STATUS_API_URL: ${env:RAPPI_STATUS_API_URL, ''}
+    RAPPI_STATUS_API_URL: ${env:RAPPI_STATUS_API_URL, 'https://rappi-status-api-exzesiphoq-uc.a.run.app/rappi/status'}
     EVENT_BUS_NAME: ${self:custom.eventBusName}
     USERS_TABLE: ${self:custom.usersTableName}
     PRODUCTS_TABLE: ${self:custom.productsTableName}
